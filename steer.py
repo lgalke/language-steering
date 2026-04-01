@@ -19,7 +19,7 @@ Usage:
 """
 
 import argparse
-import os
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -52,11 +52,14 @@ TEST_PROMPTS = [
 ]
 
 
-def load_data(path: Path) -> pd.DataFrame:
-    """Load the linguistic quality preference TSV."""
+def load_data(path: Path, val_fraction: float = 0.2, seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load the TSV and split into train/val sets."""
     df = pd.read_csv(path, sep="\t")
-    print(f"Loaded {len(df)} sentence pairs from {path.name}")
-    return df
+    df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    split_idx = int(len(df) * (1 - val_fraction))
+    train_df, val_df = df.iloc[:split_idx], df.iloc[split_idx:]
+    print(f"Loaded {len(df)} sentence pairs: {len(train_df)} train, {len(val_df)} val")
+    return train_df, val_df
 
 
 def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path):
@@ -98,6 +101,75 @@ def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path)
 
     del llm
     return vector_path
+
+
+def compute_perplexity(outputs) -> float:
+    """Compute perplexity from vLLM outputs with prompt_logprobs."""
+    all_logprobs = []
+    for output in outputs:
+        if output.prompt_logprobs is None:
+            continue
+        for token_logprob in output.prompt_logprobs:
+            if token_logprob is None:
+                continue
+            # Each entry maps token_id -> Logprob; take the actual token's logprob
+            for logprob_obj in token_logprob.values():
+                all_logprobs.append(logprob_obj.logprob)
+    if not all_logprobs:
+        return float("inf")
+    avg_neg_logprob = -sum(all_logprobs) / len(all_logprobs)
+    return math.exp(avg_neg_logprob)
+
+
+def evaluate_perplexity(model_name: str, val_df: pd.DataFrame, vector_path: Path, scale: float):
+    """Compute perplexity on val good sentences, with and without steering."""
+    config = MODEL_CONFIGS[model_name]
+    good_sentences = val_df["good sentence"].tolist()
+    ppl_params = SamplingParams(max_tokens=1, prompt_logprobs=1)
+
+    # Unsteered perplexity
+    print(f"\nComputing unsteered perplexity on {len(good_sentences)} val sentences...")
+    llm = LLM(
+        model=model_name,
+        enforce_eager=True,
+        enable_chunked_prefill=False,
+        enable_prefix_caching=False,
+    )
+    unsteered_outputs = llm.generate(good_sentences, sampling_params=ppl_params)
+    ppl_unsteered = compute_perplexity(unsteered_outputs)
+    del llm
+
+    # Steered perplexity
+    print("Computing steered perplexity...")
+    llm = LLM(
+        model=model_name,
+        enable_steer_vector=True,
+        enforce_eager=True,
+        enable_chunked_prefill=False,
+    )
+    steer_request = SteerVectorRequest(
+        steer_vector_name="danish_quality",
+        steer_vector_int_id=1,
+        steer_vector_local_path=str(vector_path),
+        scale=scale,
+        target_layers=config["target_layers"],
+        prefill_trigger_tokens=[-1],
+        generate_trigger_tokens=[-1],
+    )
+    steered_outputs = llm.generate(
+        good_sentences, sampling_params=ppl_params, steer_vector_request=steer_request,
+    )
+    ppl_steered = compute_perplexity(steered_outputs)
+    del llm
+
+    print(f"\n{'=' * 60}")
+    print(f"PERPLEXITY EVALUATION (model={model_name}, scale={scale})")
+    print(f"  Val set size:         {len(good_sentences)} good sentences")
+    print(f"  Unsteered perplexity: {ppl_unsteered:.2f}")
+    print(f"  Steered perplexity:   {ppl_steered:.2f}")
+    print(f"  Difference:           {ppl_steered - ppl_unsteered:+.2f}")
+    print(f"{'=' * 60}")
+    return ppl_unsteered, ppl_steered
 
 
 def generate_comparison(model_name: str, vector_path: Path, scale: float):
@@ -163,18 +235,24 @@ def main():
     )
     parser.add_argument("--scale", type=float, default=2.0, help="Steering vector scale")
     parser.add_argument("--output-dir", type=Path, default=Path("vectors"), help="Output directory for vectors")
+    parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of data for validation")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for train/val split")
     parser.add_argument("--skip-extract", action="store_true", help="Skip extraction, use existing vector")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip perplexity evaluation")
     args = parser.parse_args()
 
-    df = load_data(DATA_PATH)
+    train_df, val_df = load_data(DATA_PATH, val_fraction=args.val_fraction, seed=args.seed)
 
     config = MODEL_CONFIGS[args.model]
     vector_path = args.output_dir / f"danish_quality_{config['model_type']}.gguf"
 
     if not args.skip_extract:
-        vector_path = extract_steering_vector(args.model, df, args.output_dir)
+        vector_path = extract_steering_vector(args.model, train_df, args.output_dir)
     elif not vector_path.exists():
         raise FileNotFoundError(f"Vector file {vector_path} not found. Run without --skip-extract first.")
+
+    if not args.skip_eval:
+        evaluate_perplexity(args.model, val_df, vector_path, args.scale)
 
     generate_comparison(args.model, vector_path, args.scale)
 
