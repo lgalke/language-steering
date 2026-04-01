@@ -84,7 +84,7 @@ def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path)
         read_token_index=-1,
         show_progress=True,
         move_to_cpu=True,
-        batch_size=4,
+        batch_size=1,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -196,12 +196,13 @@ def main():
         choices=list(MODEL_CONFIGS.keys()),
         help="Model to use",
     )
-    parser.add_argument("--scale", type=float, default=2.0, help="Steering vector scale")
+    parser.add_argument("--scale", type=float, default=0.5, help="Steering vector scale")
     parser.add_argument("--output-dir", type=Path, default=Path("vectors"), help="Output directory for vectors")
     parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of data for validation")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for train/val split")
     parser.add_argument("--skip-extract", action="store_true", help="Skip extraction, use existing vector")
     parser.add_argument("--skip-eval", action="store_true", help="Skip perplexity evaluation")
+    parser.add_argument("--skip-gen", action="store_true", help="Skip genertion")
     args = parser.parse_args()
 
     train_df, val_df = load_data(DATA_PATH, val_fraction=args.val_fraction, seed=args.seed)
@@ -217,7 +218,8 @@ def main():
     if not args.skip_eval:
         evaluate_perplexity(args.model, val_df, vector_path, args.scale)
 
-    generate_comparison(args.model, vector_path, args.scale)
+    if not args.skip_gen:
+        generate_comparison(args.model, vector_path, args.scale)
 
 
 if __name__ == "__main__":
