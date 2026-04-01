@@ -1,18 +1,8 @@
 """
-Steering vectors for Danish language quality using EasySteer.
+Steering vectors for Danish language quality using steering-vectors.
 
 Setup:
-    # Clone EasySteer with its custom vLLM fork
-    git clone --recurse-submodules https://github.com/ZJU-REAL/EasySteer.git
-    cd EasySteer/vllm-steer
-    export VLLM_PRECOMPILED_WHEEL_COMMIT=95c0f928cdeeaa21c4906e73cee6a156e1b3b995
-    VLLM_USE_PRECOMPILED=1 pip install --editable .
-    cd ..
-    pip install --editable .
-    cd ..
-
-    # Install this project's deps
-    uv pip install pandas scikit-learn accelerate
+    uv sync
 
 Usage:
     python steer.py [--model MODEL] [--scale SCALE] [--output-dir DIR]
@@ -20,25 +10,22 @@ Usage:
 
 import argparse
 import math
+import pickle
 from pathlib import Path
 
 import pandas as pd
-from vllm import LLM, SamplingParams
-
-import easysteer.hidden_states as hs
-from easysteer.steer import extract_diffmean_control_vector
-from vllm.steer_vectors.request import SteerVectorRequest
+import torch
+from steering_vectors import train_steering_vector
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 DATA_PATH = Path(__file__).parent / "data" / "Linguistic_quality_preference_20260326.tsv"
 
 MODEL_CONFIGS = {
     "google/gemma-3-4b-it": {
-        "model_type": "gemma3",
         "num_layers": 26,
         "target_layers": list(range(10, 26)),
     },
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503": {
-        "model_type": "mistral",
         "num_layers": 40,
         "target_layers": list(range(15, 35)),
     },
@@ -62,105 +49,93 @@ def load_data(path: Path, val_fraction: float = 0.2, seed: int = 42) -> tuple[pd
     return train_df, val_df
 
 
+def load_model_and_tokenizer(model_name: str):
+    """Load a HuggingFace model and tokenizer."""
+    print(f"Loading model {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    model.eval()
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return model, tokenizer
+
+
 def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path):
-    """Extract hidden states and compute difference-in-means steering vector."""
+    """Train a steering vector from paired good/bad sentences."""
     config = MODEL_CONFIGS[model_name]
 
-    good_sentences = df["good sentence"].tolist()
-    bad_sentences = df["bad sentence"].tolist()
-    all_prompts = good_sentences + bad_sentences
+    training_samples = [
+        (row["good sentence"], row["bad sentence"])
+        for _, row in df.iterrows()
+    ]
 
-    print(f"Extracting hidden states from {model_name} for {len(all_prompts)} prompts...")
-    llm = LLM(
-        model=model_name,
-        enforce_eager=True,
-        enable_chunked_prefill=False,
-        enable_prefix_caching=False,
-    )
+    model, tokenizer = load_model_and_tokenizer(model_name)
 
-    all_hidden_states, _ = hs.get_all_hidden_states_generate(llm, all_prompts)
-
-    n_good = len(good_sentences)
-    positive_indices = list(range(n_good))
-    negative_indices = list(range(n_good, len(all_prompts)))
-
-    print("Computing difference-in-means steering vector...")
-    control_vector = extract_diffmean_control_vector(
-        all_hidden_states=all_hidden_states,
-        positive_indices=positive_indices,
-        negative_indices=negative_indices,
-        model_type=config["model_type"],
-        token_pos=-1,
-        normalize=True,
+    print(f"Training steering vector from {len(training_samples)} pairs...")
+    steering_vector = train_steering_vector(
+        model,
+        tokenizer,
+        training_samples,
+        layers=config["target_layers"],
+        read_token_index=-1,
+        show_progress=True,
+        move_to_cpu=True,
+        batch_size=4,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    vector_path = output_dir / f"danish_quality_{config['model_type']}.gguf"
-    control_vector.export_gguf(str(vector_path))
+    vector_path = output_dir / f"danish_quality_{model_name.split('/')[-1]}.pkl"
+    with open(vector_path, "wb") as f:
+        pickle.dump(steering_vector, f)
     print(f"Saved steering vector to {vector_path}")
 
-    del llm
+    del model
+    torch.cuda.empty_cache()
     return vector_path
 
 
-def compute_perplexity(outputs) -> float:
-    """Compute perplexity from vLLM outputs with prompt_logprobs."""
-    all_logprobs = []
-    for output in outputs:
-        if output.prompt_logprobs is None:
-            continue
-        for token_logprob in output.prompt_logprobs:
-            if token_logprob is None:
-                continue
-            # Each entry maps token_id -> Logprob; take the actual token's logprob
-            for logprob_obj in token_logprob.values():
-                all_logprobs.append(logprob_obj.logprob)
-    if not all_logprobs:
-        return float("inf")
-    avg_neg_logprob = -sum(all_logprobs) / len(all_logprobs)
-    return math.exp(avg_neg_logprob)
+def load_steering_vector(vector_path: Path):
+    """Load a saved steering vector."""
+    with open(vector_path, "rb") as f:
+        return pickle.load(f)
+
+
+def compute_perplexity(model, tokenizer, sentences: list[str]) -> float:
+    """Compute perplexity of the model on a list of sentences."""
+    total_loss = 0.0
+    total_tokens = 0
+    for sentence in sentences:
+        inputs = tokenizer(sentence, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            outputs = model(**inputs, labels=inputs["input_ids"])
+        n_tokens = inputs["input_ids"].shape[1]
+        total_loss += outputs.loss.item() * n_tokens
+        total_tokens += n_tokens
+    return math.exp(total_loss / total_tokens)
 
 
 def evaluate_perplexity(model_name: str, val_df: pd.DataFrame, vector_path: Path, scale: float):
     """Compute perplexity on val good sentences, with and without steering."""
-    config = MODEL_CONFIGS[model_name]
     good_sentences = val_df["good sentence"].tolist()
-    ppl_params = SamplingParams(max_tokens=1, prompt_logprobs=1)
+
+    model, tokenizer = load_model_and_tokenizer(model_name)
+    steering_vector = load_steering_vector(vector_path)
 
     # Unsteered perplexity
     print(f"\nComputing unsteered perplexity on {len(good_sentences)} val sentences...")
-    llm = LLM(
-        model=model_name,
-        enforce_eager=True,
-        enable_chunked_prefill=False,
-        enable_prefix_caching=False,
-    )
-    unsteered_outputs = llm.generate(good_sentences, sampling_params=ppl_params)
-    ppl_unsteered = compute_perplexity(unsteered_outputs)
-    del llm
+    ppl_unsteered = compute_perplexity(model, tokenizer, good_sentences)
 
     # Steered perplexity
     print("Computing steered perplexity...")
-    llm = LLM(
-        model=model_name,
-        enable_steer_vector=True,
-        enforce_eager=True,
-        enable_chunked_prefill=False,
-    )
-    steer_request = SteerVectorRequest(
-        steer_vector_name="danish_quality",
-        steer_vector_int_id=1,
-        steer_vector_local_path=str(vector_path),
-        scale=scale,
-        target_layers=config["target_layers"],
-        prefill_trigger_tokens=[-1],
-        generate_trigger_tokens=[-1],
-    )
-    steered_outputs = llm.generate(
-        good_sentences, sampling_params=ppl_params, steer_vector_request=steer_request,
-    )
-    ppl_steered = compute_perplexity(steered_outputs)
-    del llm
+    with steering_vector.apply(model, multiplier=scale, min_token_index=0):
+        ppl_steered = compute_perplexity(model, tokenizer, good_sentences)
+
+    del model
+    torch.cuda.empty_cache()
 
     print(f"\n{'=' * 60}")
     print(f"PERPLEXITY EVALUATION (model={model_name}, scale={scale})")
@@ -174,45 +149,33 @@ def evaluate_perplexity(model_name: str, val_df: pd.DataFrame, vector_path: Path
 
 def generate_comparison(model_name: str, vector_path: Path, scale: float):
     """Generate text with and without the steering vector for comparison."""
-    config = MODEL_CONFIGS[model_name]
-    sampling_params = SamplingParams(temperature=0.7, max_tokens=256)
+    model, tokenizer = load_model_and_tokenizer(model_name)
+    steering_vector = load_steering_vector(vector_path)
+    gen_kwargs = dict(max_new_tokens=256, temperature=0.7, do_sample=True)
 
     # Unsteered generation
     print("\n=== Unsteered generation ===")
-    llm = LLM(
-        model=model_name,
-        enforce_eager=True,
-        enable_chunked_prefill=False,
-        enable_prefix_caching=False,
-    )
-    unsteered_outputs = llm.generate(TEST_PROMPTS, sampling_params=sampling_params)
-    del llm
+    unsteered_outputs = []
+    for prompt in TEST_PROMPTS:
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            output_ids = model.generate(**inputs, **gen_kwargs)
+        generated = tokenizer.decode(output_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        unsteered_outputs.append(generated)
 
     # Steered generation
     print("\n=== Steered generation ===")
-    llm = LLM(
-        model=model_name,
-        enable_steer_vector=True,
-        enforce_eager=True,
-        enable_chunked_prefill=False,
-    )
+    steered_outputs = []
+    with steering_vector.apply(model, multiplier=scale, min_token_index=0):
+        for prompt in TEST_PROMPTS:
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                output_ids = model.generate(**inputs, **gen_kwargs)
+            generated = tokenizer.decode(output_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+            steered_outputs.append(generated)
 
-    steer_request = SteerVectorRequest(
-        steer_vector_name="danish_quality",
-        steer_vector_int_id=1,
-        steer_vector_local_path=str(vector_path),
-        scale=scale,
-        target_layers=config["target_layers"],
-        prefill_trigger_tokens=[-1],
-        generate_trigger_tokens=[-1],
-    )
-
-    steered_outputs = llm.generate(
-        TEST_PROMPTS,
-        sampling_params=sampling_params,
-        steer_vector_request=steer_request,
-    )
-    del llm
+    del model
+    torch.cuda.empty_cache()
 
     # Print comparison
     print("\n" + "=" * 80)
@@ -220,8 +183,8 @@ def generate_comparison(model_name: str, vector_path: Path, scale: float):
     print("=" * 80)
     for prompt, unsteered, steered in zip(TEST_PROMPTS, unsteered_outputs, steered_outputs):
         print(f"\nPrompt: {prompt}")
-        print(f"\n  Unsteered: {unsteered.outputs[0].text[:300]}")
-        print(f"\n  Steered:   {steered.outputs[0].text[:300]}")
+        print(f"\n  Unsteered: {unsteered[:300]}")
+        print(f"\n  Steered:   {steered[:300]}")
         print("-" * 80)
 
 
@@ -243,8 +206,8 @@ def main():
 
     train_df, val_df = load_data(DATA_PATH, val_fraction=args.val_fraction, seed=args.seed)
 
-    config = MODEL_CONFIGS[args.model]
-    vector_path = args.output_dir / f"danish_quality_{config['model_type']}.gguf"
+    model_short = args.model.split("/")[-1]
+    vector_path = args.output_dir / f"danish_quality_{model_short}.pkl"
 
     if not args.skip_extract:
         vector_path = extract_steering_vector(args.model, train_df, args.output_dir)
