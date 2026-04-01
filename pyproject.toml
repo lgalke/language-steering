@@ -1,15 +1,11 @@
 [project]
 name = "language-steering"
 version = "0.1.0"
-description = "Steering vectors for Danish language quality"
-requires-python = ">=3.10"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
-    "pandas",
-    "scikit-learn",
-    "accelerate",
-]
-
-[project.optional-dependencies]
-easysteer = [
-    "easysteer @ git+https://github.com/ZJU-REAL/EasySteer.git",
+    "easysteer>=0.0.1.dev0",
+    "pandas>=2.3.3",
+    "vllm>=0.18.1",
 ]
