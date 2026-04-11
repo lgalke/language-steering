@@ -30,6 +30,9 @@ MODEL_CONFIGS = {
         "num_layers": 26,
         "target_layers": list(range(10, 26)),
     },
+    # NOTE: gemma-4-E4B-it is a multimodal (vision+language) model.
+    # nnsight loads it as Gemma4ForConditionalGeneration, which causes weight mismatches.
+    # Use only if you have Ampere+ GPUs (bfloat16) and verify nnsight support first.
     "google/gemma-4-E4B-it": {
         "num_layers": 42,
         "target_layers": None,
@@ -87,7 +90,7 @@ def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path)
 
     print(f"Loading model {model_name}...")
     processor = AutoProcessor.from_pretrained(model_name)
-    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.bfloat16, device_map="auto")
+    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.float16, device_map="auto")
 
     pos_prompts = [preprocess(processor, row["good sentence"]) for _, row in df.iterrows()]
     neg_prompts = [preprocess(processor, row["bad sentence"]) for _, row in df.iterrows()]
@@ -174,7 +177,7 @@ def evaluate_perplexity(model_name: str, val_df: pd.DataFrame, vector_path: Path
     vectors = payload["vectors"]
 
     print(f"Loading model {model_name}...")
-    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.bfloat16, device_map="auto")
+    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.float16, device_map="auto")
 
     print(f"\nComputing unsteered perplexity on {len(good_sentences)} val sentences...")
     ppl_unsteered = compute_perplexity(nn_model, good_sentences)
@@ -203,7 +206,7 @@ def generate_comparison(model_name: str, vector_path: Path, scale: float):
     gen_kwargs = dict(max_new_tokens=256, temperature=0.7, do_sample=True)
 
     print(f"Loading model {model_name}...")
-    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.bfloat16, device_map="auto")
+    nn_model = StandardizedTransformer(model_name, torch_dtype=torch.float16, device_map="auto")
     # Access the underlying HF model for generation and hook registration
     inner_model = nn_model._model
     tokenizer = nn_model.tokenizer
