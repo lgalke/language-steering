@@ -16,7 +16,9 @@ from pathlib import Path
 import pandas as pd
 import torch
 from steering_vectors import train_steering_vector
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import transformers
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
+
 
 DATA_PATH = Path(__file__).parent / "data" / "Linguistic_quality_preference_20260326.tsv"
 
@@ -24,6 +26,10 @@ MODEL_CONFIGS = {
     "google/gemma-3-4b-it": {
         "num_layers": 26,
         "target_layers": list(range(10, 26)),
+    },
+    "google/gemma-4-E4B-it": {
+	"num_layers": 42,
+	"target_layers": None,
     },
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503": {
         "num_layers": 40,
@@ -39,6 +45,23 @@ TEST_PROMPTS = [
 ]
 
 
+def preprocess(processor, example, instruction="Write a Danish sentence.", add_generation_prompt=False):
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": f"{instruction}"},
+        {"role": "assistant", "content": f"{example}"},
+    ]
+    text = processor.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=add_generation_prompt, 
+        enable_thinking=False
+    )
+    return text
+
+
+
+
 def load_data(path: Path, val_fraction: float = 0.2, seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load the TSV and split into train/val sets."""
     df = pd.read_csv(path, sep="\t")
@@ -49,36 +72,34 @@ def load_data(path: Path, val_fraction: float = 0.2, seed: int = 42) -> tuple[pd
     return train_df, val_df
 
 
-def load_model_and_tokenizer(model_name: str):
-    """Load a HuggingFace model and tokenizer."""
-    print(f"Loading model {model_name}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
-    model.eval()
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    return model, tokenizer
 
 
 def extract_steering_vector(model_name: str, df: pd.DataFrame, output_dir: Path):
     """Train a steering vector from paired good/bad sentences."""
     config = MODEL_CONFIGS[model_name]
 
+    print(f"Loading model {model_name}...")
+    #tokenizer = AutoTokenizer.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        dtype="auto",
+        device_map="auto",
+    )
+    model.eval()
+
     training_samples = [
-        (row["good sentence"], row["bad sentence"])
+        (preprocess(processor, row["good sentence"]),
+         preprocess(processor, row["bad sentence"]))
         for _, row in df.iterrows()
     ]
 
-    model, tokenizer = load_model_and_tokenizer(model_name)
+    print(training_samples[:3])
 
     print(f"Training steering vector from {len(training_samples)} pairs...")
     steering_vector = train_steering_vector(
         model,
-        tokenizer,
+        processor.tokenizer,
         training_samples,
         layers=config["target_layers"],
         read_token_index=-1,
@@ -223,4 +244,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Transformer version", transformers.__version__)
     main()

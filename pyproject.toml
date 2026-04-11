@@ -8,6 +8,6 @@ dependencies = [
     "pandas>=2.3.3",
     "steering-vectors>=0.12",
     "torch>=2.0",
-    "transformers>=4.40",
+    "transformers>=5.5.3",
     "accelerate>=0.30",
 ]
