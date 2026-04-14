@@ -28,13 +28,15 @@ from transformers import AutoModelForCausalLM, AutoProcessor
 DATA_PATH = Path(__file__).parent / "data" / "Linguistic_quality_preference_20260326.tsv"
 
 MODEL_CONFIGS = {
-    "google/gemma-3-4b-it": {
-        "num_layers": 26,
-        "target_layers": list(range(10, 26)),
+    # pyvene has native support for qwen2 and mistral, so "block_output"
+    # resolves correctly for these. gemma3 is NOT supported by pyvene.
+    "Qwen/Qwen2.5-7B-Instruct": {
+        "num_layers": 28,
+        "target_layers": list(range(10, 28)),
     },
-    "google/gemma-4-E4B-it": {
-        "num_layers": 42,
-        "target_layers": None,
+    "Qwen/Qwen2.5-3B-Instruct": {
+        "num_layers": 36,
+        "target_layers": list(range(12, 36)),
     },
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503": {
         "num_layers": 40,
@@ -98,28 +100,6 @@ def get_target_layers(model_name: str) -> list[int]:
     return list(range(config["num_layers"]))
 
 
-def _find_layers_path(model) -> str:
-    """Auto-detect the dotted path to the transformer layers module.
-
-    Different architectures place layers at different paths:
-      - Gemma3ForConditionalGeneration: language_model.model.layers
-      - MistralForCausalLM / standard CausalLM: model.layers
-    """
-    for prefix in ["model.layers", "language_model.model.layers"]:
-        m = model
-        try:
-            for attr in prefix.split("."):
-                m = getattr(m, attr)
-            if len(list(m)) > 0:  # has children (layer modules)
-                return prefix
-        except AttributeError:
-            continue
-    raise ValueError(
-        f"Cannot find transformer layers in {type(model).__name__}. "
-        "Add the correct path to _find_layers_path()."
-    )
-
-
 def train_reft(
     model_name: str,
     train_df: pd.DataFrame,
@@ -147,16 +127,14 @@ def train_reft(
         model_name, torch_dtype=torch.bfloat16, device_map="auto"
     )
     hidden_size = model.config.get_text_config().hidden_size
-    layers_path = _find_layers_path(model)
-    print(f"Detected layers path: {layers_path}")
 
-    # Build per-layer representations for ReftConfig
-    # Use explicit module paths (pyvene's "block_output" shorthand only works
-    # for model types in its internal mapping).
+    # Build per-layer representations for ReftConfig.
+    # "block_output" is pyvene's abstract name for the transformer block output;
+    # it resolves correctly for qwen2, mistral, llama, etc.
     representations = [
         {
             "layer": layer_idx,
-            "component": f"{layers_path}[{layer_idx}].output",
+            "component": "block_output",
             "low_rank_dimension": low_rank_dim,
             "intervention": pyreft.LoreftIntervention(
                 embed_dim=hidden_size,
@@ -365,7 +343,7 @@ def main():
     parser = argparse.ArgumentParser(description="ReFT-based Danish language quality steering")
     parser.add_argument(
         "--model",
-        default="google/gemma-3-4b-it",
+        default="Qwen/Qwen2.5-7B-Instruct",
         choices=list(MODEL_CONFIGS.keys()),
         help="Model to use",
     )
