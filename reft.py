@@ -124,7 +124,7 @@ def train_reft(
     model = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=torch.bfloat16, device_map="auto"
     )
-    hidden_size = model.config.hidden_size
+    hidden_size = model.config.get_text_config().hidden_size
 
     # Build per-layer representations for ReftConfig
     representations = [
