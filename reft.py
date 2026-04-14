@@ -5,15 +5,19 @@ An alternative to the difference-in-means steering in steer.py. Instead of
 computing mean(good) - mean(bad), this script trains lightweight LoReFT
 interventions on the same paired data via backpropagation.
 
+NOTE: PyReFT only supports single-GPU training. Use --gpu to select which
+GPU to use (default: 0). CUDA_VISIBLE_DEVICES is set accordingly at startup.
+
 Setup:
     uv sync
 
 Usage:
-    python reft.py [--model MODEL] [--output-dir DIR] [--epochs N]
+    python reft.py [--model MODEL] [--output-dir DIR] [--epochs N] [--gpu 0]
 """
 
 import argparse
 import math
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -367,6 +371,7 @@ def main():
         choices=list(MODEL_CONFIGS.keys()),
         help="Model to use",
     )
+    parser.add_argument("--gpu", type=str, default="0", help="GPU index for CUDA_VISIBLE_DEVICES (pyreft is single-GPU only)")
     parser.add_argument("--output-dir", type=Path, default=Path("reft_models"), help="Output directory for trained interventions")
     parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of data for validation")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for train/val split")
@@ -378,6 +383,11 @@ def main():
     parser.add_argument("--skip-eval", action="store_true", help="Skip perplexity evaluation")
     parser.add_argument("--skip-gen", action="store_true", help="Skip generation comparison")
     args = parser.parse_args()
+
+    # PyReFT only supports single-GPU training — restrict visible devices now,
+    # before any CUDA context is created by subsequent imports/model loads.
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    print(f"CUDA_VISIBLE_DEVICES={args.gpu} (pyreft is single-GPU only)")
 
     train_df, val_df = load_data(DATA_PATH, val_fraction=args.val_fraction, seed=args.seed)
 
