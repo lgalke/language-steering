@@ -98,6 +98,28 @@ def get_target_layers(model_name: str) -> list[int]:
     return list(range(config["num_layers"]))
 
 
+def _find_layers_path(model) -> str:
+    """Auto-detect the dotted path to the transformer layers module.
+
+    Different architectures place layers at different paths:
+      - Gemma3ForConditionalGeneration: language_model.model.layers
+      - MistralForCausalLM / standard CausalLM: model.layers
+    """
+    for prefix in ["model.layers", "language_model.model.layers"]:
+        m = model
+        try:
+            for attr in prefix.split("."):
+                m = getattr(m, attr)
+            if len(list(m)) > 0:  # has children (layer modules)
+                return prefix
+        except AttributeError:
+            continue
+    raise ValueError(
+        f"Cannot find transformer layers in {type(model).__name__}. "
+        "Add the correct path to _find_layers_path()."
+    )
+
+
 def train_reft(
     model_name: str,
     train_df: pd.DataFrame,
@@ -125,12 +147,16 @@ def train_reft(
         model_name, torch_dtype=torch.bfloat16, device_map="auto"
     )
     hidden_size = model.config.get_text_config().hidden_size
+    layers_path = _find_layers_path(model)
+    print(f"Detected layers path: {layers_path}")
 
     # Build per-layer representations for ReftConfig
+    # Use explicit module paths (pyvene's "block_output" shorthand only works
+    # for model types in its internal mapping).
     representations = [
         {
             "layer": layer_idx,
-            "component": "block_output",
+            "component": f"{layers_path}[{layer_idx}].output",
             "low_rank_dimension": low_rank_dim,
             "intervention": pyreft.LoreftIntervention(
                 embed_dim=hidden_size,
