@@ -240,9 +240,10 @@ def _compute_perplexity_reft(reft_model, tokenizer, sentences: list[str]) -> flo
     """Perplexity on raw sentences with ReFT interventions applied at the last prompt token."""
     total_loss = 0.0
     total_tokens = 0
+    device = next(reft_model.model.parameters()).device
 
     for sentence in tqdm(sentences, desc="perplexity (reft)"):
-        input_ids = tokenizer(sentence, return_tensors="pt")["input_ids"]
+        input_ids = tokenizer(sentence, return_tensors="pt")["input_ids"].to(device)
         seq_len = input_ids.shape[1]
         unit_location = seq_len - 1
 
