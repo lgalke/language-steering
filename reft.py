@@ -174,12 +174,21 @@ def train_reft(
         report_to="none",
     )
 
-    trainer = pyreft.ReftTrainerForCausalLM(
-        model=reft_model,
-        tokenizer=tokenizer,
-        args=training_args,
-        **data_module,
-    )
+    # transformers >= 4.46 renamed `tokenizer` to `processing_class` on Trainer
+    try:
+        trainer = pyreft.ReftTrainerForCausalLM(
+            model=reft_model,
+            processing_class=tokenizer,
+            args=training_args,
+            **data_module,
+        )
+    except TypeError:
+        trainer = pyreft.ReftTrainerForCausalLM(
+            model=reft_model,
+            tokenizer=tokenizer,
+            args=training_args,
+            **data_module,
+        )
     trainer.train()
 
     save_path = output_dir / f"reft_danish_quality_{model_name.split('/')[-1]}"
