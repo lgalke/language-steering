@@ -100,6 +100,17 @@ def get_target_layers(model_name: str) -> list[int]:
     return list(range(config["num_layers"]))
 
 
+class ReftTrainerForCausalLM(pyreft.ReftTrainerForCausalLM):
+    """Patches ReftTrainerForCausalLM for transformers >= 4.46.
+
+    Newer transformers passes `num_items_in_batch` to compute_loss(), but
+    pyreft's trainer doesn't accept it yet.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        return super().compute_loss(model, inputs, return_outputs=return_outputs)
+
+
 def train_reft(
     model_name: str,
     train_df: pd.DataFrame,
@@ -176,14 +187,14 @@ def train_reft(
 
     # transformers >= 4.46 renamed `tokenizer` to `processing_class` on Trainer
     try:
-        trainer = pyreft.ReftTrainerForCausalLM(
+        trainer = ReftTrainerForCausalLM(
             model=reft_model,
             processing_class=tokenizer,
             args=training_args,
             **data_module,
         )
     except TypeError:
-        trainer = pyreft.ReftTrainerForCausalLM(
+        trainer = ReftTrainerForCausalLM(
             model=reft_model,
             tokenizer=tokenizer,
             args=training_args,
