@@ -247,7 +247,7 @@ def _compute_perplexity_reft(reft_model, tokenizer, sentences: list[str]) -> flo
         unit_location = seq_len - 1
 
         unit_locations = {
-            "sources->base": (None, [[[unit_location]]] * reft_model.config.intervention_count)
+            "sources->base": (None, [[[unit_location]]] * len(reft_model.config.representations))
         }
 
         with torch.no_grad():
@@ -336,7 +336,7 @@ def generate_comparison(model_name: str, reft_path: Path):
         unit_locations = {
             "sources->base": (
                 None,
-                [[[unit_location]]] * reft_model.config.intervention_count,
+                [[[unit_location]]] * len(reft_model.config.representations),
             )
         }
         with torch.no_grad():
