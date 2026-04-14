@@ -237,24 +237,33 @@ def _compute_perplexity_base(model, tokenizer, sentences: list[str]) -> float:
 
 
 def _compute_perplexity_reft(reft_model, tokenizer, sentences: list[str]) -> float:
-    """Perplexity on raw sentences with ReFT interventions applied at the last prompt token."""
+    """Perplexity on raw sentences with ReFT interventions applied at the last token.
+
+    Labels must be passed as a separate kwarg (not inside the base dict) so that
+    pyvene carries them through to the counterfactual (intervened) forward pass and
+    computes loss there rather than on the unmodified base run.
+    """
     total_loss = 0.0
     total_tokens = 0
     device = next(reft_model.model.parameters()).device
+    n_interventions = len(reft_model.config.representations)
 
     for sentence in tqdm(sentences, desc="perplexity (reft)"):
-        input_ids = tokenizer(sentence, return_tensors="pt")["input_ids"].to(device)
+        encoding = tokenizer(sentence, return_tensors="pt")
+        input_ids = encoding["input_ids"].to(device)
+        attention_mask = encoding["attention_mask"].to(device)
         seq_len = input_ids.shape[1]
         unit_location = seq_len - 1
 
         unit_locations = {
-            "sources->base": (None, [[[unit_location]]] * len(reft_model.config.representations))
+            "sources->base": (None, [[[unit_location]]] * n_interventions)
         }
 
         with torch.no_grad():
             _, out = reft_model(
-                {"input_ids": input_ids, "labels": input_ids},
+                {"input_ids": input_ids, "attention_mask": attention_mask},
                 unit_locations=unit_locations,
+                labels=input_ids,  # separate kwarg — pyvene uses this for the cf loss
             )
 
         n_tokens = seq_len - 1
