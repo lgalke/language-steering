@@ -10,4 +10,6 @@ dependencies = [
     "transformers>=5.5.3",
     "accelerate>=0.30",
     "nnterp",
+    "torchvision>=0.26.0",
+    "pillow>=12.2.0",
 ]
