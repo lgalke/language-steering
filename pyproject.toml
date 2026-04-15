@@ -12,4 +12,5 @@ dependencies = [
     "nnterp",
     "torchvision>=0.26.0",
     "pillow>=12.2.0",
+    "pyreft",
 ]
