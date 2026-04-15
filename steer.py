@@ -41,6 +41,14 @@ MODEL_CONFIGS = {
         "num_layers": 40,
         "target_layers": list(range(15, 35)),
     },
+    "Qwen/Qwen3.5-35B-A3B" : {
+        "num_layers": 40,
+        "target_layers": None,
+    },
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": {
+        "num_layers": 48,
+        "target_layers": None
+    }
 }
 
 TEST_PROMPTS = [

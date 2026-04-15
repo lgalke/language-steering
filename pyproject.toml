@@ -13,4 +13,5 @@ dependencies = [
     "torchvision>=0.26.0",
     "pillow>=12.2.0",
     "pyreft",
+    "huggingface-hub>=1.10.2",
 ]
